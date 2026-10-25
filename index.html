@@ -136,10 +136,16 @@ async function rapikan(raw){
 
 TRANSKRIP:
 `+raw;
- const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+LS.mk,
+ const ms=[LS.model,'gemini-3-flash-preview','gemini-2.5-flash','gemini-2.5-flash-lite','gemini-2.0-flash'].filter(Boolean);
+ let last='';
+ for(const m of ms){
+  const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent?key='+LS.mk,
   {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:p}]}]})});
- if(!r.ok)throw Error('Gemini '+r.status+': '+(await r.text()).slice(0,160));
- const j=await r.json();return j.candidates[0].content.parts.map(x=>x.text||'').join('')}
+  if(r.ok){const j=await r.json();return j.candidates[0].content.parts.map(x=>x.text||'').join('')}
+  last='Gemini '+m+' '+r.status+': '+(await r.text()).slice(0,160);
+  if(r.status!==404&&r.status!==400)break;
+ }
+ throw Error(last)}
 async function process(blobs,dur,title,existing){
  const id=existing?existing.id:Date.now();
  const note=existing||{id,title:title||'',dur,audio:blobs,raw:'',md:'',status:'proses'};
