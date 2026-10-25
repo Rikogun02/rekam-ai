@@ -97,7 +97,7 @@ function startSeg(s){
  rec.start(5000);clearTimeout(segTimer);segTimer=setTimeout(()=>rec.state==='recording'&&rec.stop(),SEG_MS)}
 $('#rec').onclick=async()=>{
  if(live){live=false;clearTimeout(segTimer);rec.stop();return}
- try{if(!LS.gk||!LS.mk)throw Error('Isi dulu API key di Pengaturan.');
+ try{if(!LS.mk)throw Error('Isi dulu API key di Pengaturan.');
   const s=await getStream();segs=[];live=true;curTitle=$('#ttl').value.trim();
   startSeg(s);t0=Date.now();tick=setInterval(()=>$('#t').textContent=fmt((Date.now()-t0)/1e3),500);
   try{wake=await navigator.wakeLock.request('screen')}catch{}
@@ -109,16 +109,25 @@ function release(){clearInterval(tick);wake&&wake.release().catch(()=>{});
  $('#rec').textContent='Mulai';$('#rec').classList.remove('live')}
 function finish(){const dur=(Date.now()-t0)/1e3;release();process(segs,dur,curTitle)}
 $('#up').onchange=e=>{const f=e.target.files[0];if(!f)return;
- if(!LS.gk||!LS.mk)return say('Isi dulu API key di Pengaturan.',1);
+ if(!LS.mk)return say('Isi dulu API key di Pengaturan.',1);
  process([f],0,$('#ttl').value.trim()||f.name);e.target.value=''};
-// ---------- Groq (transkrip) & Gemini (rapikan)
+// ---------- Gemini (baca audio langsung & rapikan)
+const MODELS=()=>[LS.model,'gemini-3-flash-preview','gemini-2.5-flash','gemini-2.5-flash-lite','gemini-2.0-flash'].filter(Boolean);
+async function gem(parts){
+ let last='';
+ for(const m of MODELS()){
+  const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent?key='+LS.mk,
+  {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.2}})});
+  if(r.ok){const j=await r.json();return (j.candidates?.[0]?.content?.parts||[]).map(x=>x.text||'').join('')}
+  last='Gemini '+m+' '+r.status+': '+(await r.text()).slice(0,160);
+  if(r.status!==404&&r.status!==400)break;
+ }
+ throw Error(last)}
+const b64=b=>new Promise((res,rej)=>{const f=new FileReader();f.onload=()=>res(f.result.split(',')[1]);f.onerror=()=>rej(Error('Gagal membaca file audio'));f.readAsDataURL(b)});
 async function transcribe(b,i){
- const fd=new FormData();const ext=b.type.includes('mp4')||b.type.includes('m4a')?'m4a':b.type.includes('mpeg')?'mp3':b.type.includes('wav')?'wav':'webm';
- fd.append('file',b,'seg'+i+'.'+ext);fd.append('model','whisper-large-v3');fd.append('response_format','verbose_json');fd.append('temperature','0');
- if(LS.lang)fd.append('language',LS.lang);
- const r=await fetch('https://api.groq.com/openai/v1/audio/transcriptions',{method:'POST',headers:{Authorization:'Bearer '+LS.gk},body:fd});
- if(!r.ok)throw Error('Groq '+r.status+': '+(await r.text()).slice(0,160));const j=await r.json();if(!j.segments)return(j.text||'').trim();
- return j.segments.filter(s=>s.no_speech_prob<0.9).map(s=>s.text.trim()).join(' ').trim()}
+ const data=await b64(b);
+ const txt=await gem([{text:'Transkripsikan ucapan dalam audio ini persis seperti yang diucapkan. Bahasanya Indonesia, bisa bercampur bahasa Jawa. Tulis hanya teks transkripsinya tanpa keterangan tambahan. Jika tidak ada ucapan yang jelas, kembalikan teks kosong.'},{inline_data:{mime_type:(b.type||'audio/webm').split(';')[0],data}}]);
+ return txt.trim()}
 async function rapikan(raw){
  const p=`Kamu asisten pencatat rapat. Teks di bawah adalah transkrip otomatis percakapan berbahasa Indonesia dan Jawa (mungkin ada salah dengar). Tulis dalam bahasa Indonesia, format Markdown, dengan bagian persis:
 ## Judul
@@ -135,17 +144,8 @@ async function rapikan(raw){
 (transkrip yang sudah dibersihkan: perbaiki ejaan, hapus kata pengisi dan pengulangan, beri paragraf; pertahankan istilah Jawa yang diucapkan dan jangan menambah isi yang tidak ada)
 
 TRANSKRIP:
-`+raw;
- const ms=[LS.model,'gemini-3-flash-preview','gemini-2.5-flash','gemini-2.5-flash-lite','gemini-2.0-flash'].filter(Boolean);
- let last='';
- for(const m of ms){
-  const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent?key='+LS.mk,
-  {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:p}]}]})});
-  if(r.ok){const j=await r.json();return j.candidates[0].content.parts.map(x=>x.text||'').join('')}
-  last='Gemini '+m+' '+r.status+': '+(await r.text()).slice(0,160);
-  if(r.status!==404&&r.status!==400)break;
- }
- throw Error(last)}
+`;
+ return gem([{text:p+raw}])}
 async function process(blobs,dur,title,existing){
  const id=existing?existing.id:Date.now();
  const note=existing||{id,title:title||'',dur,audio:blobs,raw:'',md:'',status:'proses'};
