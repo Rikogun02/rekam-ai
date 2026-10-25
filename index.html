@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="id"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14201f">
+<link rel="manifest" href="manifest.json"><link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<title>Rekam AI</title>
+<style>
+:root{--bg:#eef1ec;--card:#fff;--ink:#14201f;--mut:#5d6b69;--line:#d3dad5;--acc:#e8553f;--ok:#2f7d5b}
+@media(prefers-color-scheme:dark){:root{--bg:#14201f;--card:#1c2b2a;--ink:#eef1ec;--mut:#9bacaa;--line:#2f4342}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:640px;margin:0 auto;padding:16px}
+h1{font:700 26px Georgia,serif;margin:8px 0 14px}
+nav{display:flex;gap:6px;margin-bottom:14px}
+nav button{flex:1;padding:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;font:inherit}
+nav button.on{background:var(--ink);color:var(--bg)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
+label{display:block;font-size:14px;color:var(--mut);margin:10px 0 4px}
+input,select,textarea{width:100%;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font:inherit}
+button.b{width:100%;padding:13px;border:0;border-radius:12px;background:var(--ink);color:var(--bg);font:600 16px inherit;margin-top:10px}
+button.sm{padding:8px 12px;border:1px solid var(--line);background:none;color:var(--ink);border-radius:8px;font:inherit;margin:4px 6px 0 0}
+#rec{width:132px;height:132px;border-radius:50%;border:0;background:var(--acc);color:#fff;font:700 18px inherit;display:block;margin:10px auto}
+#rec.live{animation:p 1.4s infinite}
+@keyframes p{50%{box-shadow:0 0 0 18px rgba(232,85,63,.2)}}
+@media(prefers-reduced-motion:reduce){#rec.live{animation:none}}
+#t{text-align:center;font:600 34px ui-monospace,monospace}
+.mut{color:var(--mut);font-size:14px}.err{color:var(--acc)}
+.item{padding:12px 0;border-bottom:1px solid var(--line)}.item b{display:block}
+pre{white-space:pre-wrap;word-wrap:break-word;font:15px/1.6 inherit;margin:0}
+.hide{display:none}
+</style></head><body><main>
+<h1>Rekam AI</h1>
+<nav><button data-v="rec" class="on">Rekam</button><button data-v="list">Catatan</button><button data-v="set">Pengaturan</button></nav>
+
+<section id="rec-v">
+ <div class="card">
+  <div id="t">00:00</div>
+  <button id="rec">Mulai</button>
+  <p class="mut" style="text-align:center;margin:0" id="st">Siap merekam. Biarkan layar tetap menyala.</p>
+  <label>Sumber suara</label>
+  <select id="src"><option value="mic">Mikrofon (loudspeaker untuk telepon/Zoom/Meet di HP)</option><option value="tab">Mikrofon + audio tab (laptop: Zoom/Meet web)</option></select>
+  <label>Judul (opsional)</label><input id="ttl" placeholder="Rapat tim, telepon klien…">
+ </div>
+ <div class="card"><b>Atau unggah rekaman yang sudah ada</b>
+  <input type="file" id="up" accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.webm,.mp4" style="margin-top:8px">
+ </div>
+</section>
+
+<section id="list-v" class="hide"><div class="card" id="items"></div></section>
+<section id="view-v" class="hide"><div class="card"><button class="sm" id="back">← Kembali</button><div id="vh"></div><pre id="vb"></pre></div></section>
+
+<section id="set-v" class="hide"><div class="card">
+ <label>Groq API key (transkrip suara) — console.groq.com/keys</label><input id="gk" type="password" autocomplete="off" placeholder="gsk_…">
+ <label>Gemini API key (rapikan &amp; ringkas) — aistudio.google.com/apikey</label><input id="mk" type="password" autocomplete="off" placeholder="AIza…">
+ <label>Bahasa rekaman</label>
+ <select id="lang"><option value="id">Indonesia (disarankan, Jawa campur ikut terbaca)</option><option value="jw">Jawa</option><option value="">Otomatis</option></select>
+ <button class="b" id="save">Simpan pengaturan</button>
+ <p class="mut">Key hanya disimpan di HP ini. Audio dikirim ke Groq dan Google untuk diproses, jadi jangan dipakai untuk rapat yang sangat rahasia.</p>
+</div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s),LS=localStorage;
+let db,rec,stream,ctx,segs=[],live=false,t0=0,tick,wake,segTimer,curTitle='';
+const SEG_MS=15*60*1000;
+// ---------- penyimpanan lokal (IndexedDB)
+const open=indexedDB.open('rekam-ai',1);
+open.onupgradeneeded=()=>open.result.createObjectStore('n',{keyPath:'id'});
+open.onsuccess=()=>{db=open.result;renderList()};
+const tx=m=>db.transaction('n',m).objectStore('n');
+const all=()=>new Promise(r=>{const q=tx('readonly').getAll();q.onsuccess=()=>r(q.result.sort((a,b)=>b.id-a.id))});
+const put=n=>new Promise(r=>{tx('readwrite').put(n).onsuccess=r});
+const del=id=>new Promise(r=>{tx('readwrite').delete(id).onsuccess=r});
+// ---------- navigasi & pengaturan
+function show(v){['rec','list','view','set'].forEach(x=>$('#'+x+'-v').classList.toggle('hide',x!==v));
+ document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));if(v==='list')renderList()}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>show(b.dataset.v));
+$('#gk').value=LS.gk||'';$('#mk').value=LS.mk||'';$('#lang').value=LS.lang??'id';
+$('#save').onclick=()=>{LS.gk=$('#gk').value.trim();LS.mk=$('#mk').value.trim();LS.lang=$('#lang').value;$('#save').textContent='Tersimpan ✓';setTimeout(()=>$('#save').textContent='Simpan pengaturan',1500)};
+const say=(m,e)=>{$('#st').textContent=m;$('#st').className=e?'err':'mut';$('#st').style.textAlign='center'};
+const fmt=s=>String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%60)).padStart(2,'0');
+// ---------- rekam
+async function getStream(){
+ const mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+ if($('#src').value!=='tab')return mic;
+ const d=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true});
+ if(!d.getAudioTracks().length){d.getTracks().forEach(t=>t.stop());throw Error('Audio tab tidak dibagikan. Centang "Bagikan audio tab".')}
+ ctx=new AudioContext();const dest=ctx.createMediaStreamDestination();
+ ctx.createMediaStreamSource(mic).connect(dest);ctx.createMediaStreamSource(new MediaStream(d.getAudioTracks())).connect(dest);
+ stream=[mic,d];return dest.stream}
+function startSeg(s){
+ const mime=['audio/webm;codecs=opus','audio/mp4','audio/webm'].find(m=>MediaRecorder.isTypeSupported(m));
+ const parts=[];rec=new MediaRecorder(s,{mimeType:mime,audioBitsPerSecond:32000});
+ rec.ondataavailable=e=>e.data.size&&parts.push(e.data);
+ rec.onstop=()=>{segs.push(new Blob(parts,{type:rec.mimeType}));if(live)startSeg(s);else finish()};
+ rec.start(5000);clearTimeout(segTimer);segTimer=setTimeout(()=>rec.state==='recording'&&rec.stop(),SEG_MS)}
+$('#rec').onclick=async()=>{
+ if(live){live=false;clearTimeout(segTimer);rec.stop();return}
+ try{if(!LS.gk||!LS.mk)throw Error('Isi dulu API key di Pengaturan.');
+  const s=await getStream();segs=[];live=true;curTitle=$('#ttl').value.trim();
+  startSeg(s);t0=Date.now();tick=setInterval(()=>$('#t').textContent=fmt((Date.now()-t0)/1e3),500);
+  try{wake=await navigator.wakeLock.request('screen')}catch{}
+  $('#rec').textContent='Berhenti';$('#rec').classList.add('live');say('Merekam…')
+ }catch(e){say(e.message,1)}};
+function release(){clearInterval(tick);wake&&wake.release().catch(()=>{});
+ [].concat(stream||[]).forEach(x=>x.getTracks&&x.getTracks().forEach(t=>t.stop()));
+ rec&&rec.stream.getTracks().forEach(t=>t.stop());ctx&&ctx.close();ctx=stream=null;
+ $('#rec').textContent='Mulai';$('#rec').classList.remove('live')}
+function finish(){const dur=(Date.now()-t0)/1e3;release();process(segs,dur,curTitle)}
+$('#up').onchange=e=>{const f=e.target.files[0];if(!f)return;
+ if(!LS.gk||!LS.mk)return say('Isi dulu API key di Pengaturan.',1);
+ process([f],0,$('#ttl').value.trim()||f.name);e.target.value=''};
+// ---------- Groq (transkrip) & Gemini (rapikan)
+async function transcribe(b,i){
+ const fd=new FormData();const ext=b.type.includes('mp4')||b.type.includes('m4a')?'m4a':b.type.includes('mpeg')?'mp3':b.type.includes('wav')?'wav':'webm';
+ fd.append('file',b,'seg'+i+'.'+ext);fd.append('model','whisper-large-v3');fd.append('response_format','text');fd.append('temperature','0');
+ if(LS.lang)fd.append('language',LS.lang);
+ fd.append('prompt','Percakapan dalam bahasa Indonesia dan Jawa. Matur nuwun, sampun, mboten, njih, piye, ora, wis, kowe, aku.');
+ const r=await fetch('https://api.groq.com/openai/v1/audio/transcriptions',{method:'POST',headers:{Authorization:'Bearer '+LS.gk},body:fd});
+ if(!r.ok)throw Error('Groq '+r.status+': '+(await r.text()).slice(0,160));return(await r.text()).trim()}
+async function rapikan(raw){
+ const p=`Kamu asisten pencatat rapat. Teks di bawah adalah transkrip otomatis percakapan berbahasa Indonesia dan Jawa (mungkin ada salah dengar). Tulis dalam bahasa Indonesia, format Markdown, dengan bagian persis:
+## Judul
+(satu baris judul singkat)
+## Ringkasan
+(3-6 kalimat)
+## Poin Penting
+(daftar bullet)
+## Tindak Lanjut
+(daftar tugas, siapa, kapan jika disebut; tulis "Tidak ada" jika kosong)
+## Kesimpulan
+(1 paragraf)
+## Transkrip Rapi
+(transkrip yang sudah dibersihkan: perbaiki ejaan, hapus kata pengisi dan pengulangan, beri paragraf; pertahankan istilah Jawa yang diucapkan dan jangan menambah isi yang tidak ada)
+
+TRANSKRIP:
+`+raw;
+ const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+LS.mk,
+  {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:p}]}]})});
+ if(!r.ok)throw Error('Gemini '+r.status+': '+(await r.text()).slice(0,160));
+ const j=await r.json();return j.candidates[0].content.parts.map(x=>x.text||'').join('')}
+async function process(blobs,dur,title,existing){
+ const id=existing?existing.id:Date.now();
+ const note=existing||{id,title:title||'',dur,audio:blobs,raw:'',md:'',status:'proses'};
+ await put(note);
+ try{let raw=[];for(let i=0;i<blobs.length;i++){say(`Mentranskrip bagian ${i+1} dari ${blobs.length}…`);raw.push(await transcribe(blobs[i],i))}
+  note.raw=raw.join('\n\n');if(!note.raw)throw Error('Tidak ada suara yang terbaca.');await put(note);
+  say('Merapikan dan meringkas…');note.md=await rapikan(note.raw);
+  note.title=note.title||(note.md.match(/## Judul\s+(.+)/)||[])[1]||'Rekaman '+new Date(id).toLocaleString('id-ID');
+  note.status='selesai';await put(note);say('Selesai. Buka tab Catatan.');
+ }catch(e){note.status='gagal';note.err=e.message;await put(note);say(e.message+' — rekaman tersimpan, coba lagi dari tab Catatan.',1)}
+ $('#t').textContent='00:00'}
+// ---------- daftar & tampilan catatan
+async function renderList(){if(!db)return;const ns=await all(),box=$('#items');
+ box.innerHTML=ns.length?'':'<p class="mut">Belum ada catatan. Rekam percakapan pertamamu di tab Rekam.</p>';
+ ns.forEach(n=>{const d=document.createElement('div');d.className='item';
+  d.innerHTML=`<b></b><span class="mut"></span>`;d.querySelector('b').textContent=n.title||'(tanpa judul)';
+  d.querySelector('span').textContent=new Date(n.id).toLocaleString('id-ID')+(n.dur?' · '+fmt(n.dur):'')+' · '+n.status;
+  const bt=(t,f)=>{const b=document.createElement('button');b.className='sm';b.textContent=t;b.onclick=f;d.appendChild(b)};
+  d.firstChild.onclick=()=>view(n);
+  if(n.md)bt('Buka',()=>view(n));
+  if(n.status==='gagal'||n.status==='proses')bt('Coba lagi',()=>{show('rec');process(n.audio,n.dur,n.title,n)});
+  if(n.md)bt('Unduh .md',()=>dl(n));
+  if(n.audio&&n.audio.length)bt('Unduh audio',()=>n.audio.forEach((a,i)=>save(a,(n.title||'rekaman')+'-'+(i+1)+'.'+(a.type.includes('mp4')?'m4a':'webm'))));
+  bt('Hapus',async()=>{if(confirm('Hapus catatan ini?')){await del(n.id);renderList()}});
+  box.appendChild(d)})}
+function save(b,name){const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000)}
+const full=n=>`# ${n.title}\n_${new Date(n.id).toLocaleString('id-ID')}_\n\n${n.md}\n\n---\n## Transkrip Mentah\n${n.raw}\n`;
+const dl=n=>save(new Blob([full(n)],{type:'text/markdown'}),(n.title||'catatan').replace(/[^\w\- ]+/g,'')+'.md');
+function view(n){show('view');$('#vh').innerHTML='';$('#vb').textContent=full(n);
+ const b=document.createElement('button');b.className='sm';b.textContent='Salin';b.onclick=()=>navigator.clipboard.writeText(full(n));$('#vh').appendChild(b);
+ const d=document.createElement('button');d.className='sm';d.textContent='Unduh .md';d.onclick=()=>dl(n);$('#vh').appendChild(d)}
+$('#back').onclick=()=>show('list');
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+navigator.storage&&navigator.storage.persist&&navigator.storage.persist();
+</script></body></html>
