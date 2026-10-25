@@ -118,7 +118,7 @@ async function transcribe(b,i){
  if(LS.lang)fd.append('language',LS.lang);
  const r=await fetch('https://api.groq.com/openai/v1/audio/transcriptions',{method:'POST',headers:{Authorization:'Bearer '+LS.gk},body:fd});
  if(!r.ok)throw Error('Groq '+r.status+': '+(await r.text()).slice(0,160));const j=await r.json();if(!j.segments)return(j.text||'').trim();
- return j.segments.filter(s=>s.no_speech_prob<0.5&&s.avg_logprob>-1).map(s=>s.text.trim()).join(' ').trim()}
+ return j.segments.filter(s=>s.no_speech_prob<0.9).map(s=>s.text.trim()).join(' ').trim()}
 async function rapikan(raw){
  const p=`Kamu asisten pencatat rapat. Teks di bawah adalah transkrip otomatis percakapan berbahasa Indonesia dan Jawa (mungkin ada salah dengar). Tulis dalam bahasa Indonesia, format Markdown, dengan bagian persis:
 ## Judul
